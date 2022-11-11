@@ -51,7 +51,7 @@ MacOS:
 
 - Add the executable to your `$PATH`.
 
-You will probably want to change the default paths in the executable. You're welcome to do so.
+You will probably want to change the default paths and hardcoded names (I need to change those) in the executable. You're welcome to do so.
 
 ## License
 
