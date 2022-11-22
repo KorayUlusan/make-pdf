@@ -72,40 +72,47 @@ class path(str):
         return os.path.exists(self.fullpath)
 
     @property
-    def is_file(self):
+    def isfile(self):
         return os.path.isfile(self.fullpath)
 
     @property
-    def is_folder(self):
+    def isfolder(self):
         return os.path.isdir(self.fullpath)
 
     @property
     def ext(self):
         """extension of file, starting with a dot"""
-        if self.is_file:
+        if self.isfile:
             return os.path.splitext(self.fullpath)[1]
         return ""
 
     @property
     def name(self):
         """file/folder name without path"""
-        if self.is_folder:
+        if self.isfolder:
             return os.path.split(self.fullpath)[1]
         return os.path.basename(self.fullpath)
 
     @property
     def basename(self):
         """name without path and extension"""
-        if self.is_folder:
+        if self.isfolder:
             return os.path.split(self.fullpath)[1]
         return os.path.splitext(self.name)[0]
 
     @property
     def parent(self):
         """path of where this file/folder is located"""
-        if self.is_folder:
+        if self.isfolder:
             return path(os.path.split(self.fullpath)[0])
         return path(os.path.dirname(self.fullpath))
+
+    @property
+    def children(self):
+        """return child elements inside this folder"""
+        if not self.isfolder:
+            raise NotADirectoryError("Cannot get child files/folders of a non-dir")
+        return (path(f'{self.fullpath}/{f}') for f in os.listdir(self.fullpath))
 
     @property
     def size(self):
@@ -113,18 +120,21 @@ class path(str):
         return os.path.getsize(self.fullpath)
 
     @property
-    def short_path(self):
-        """returns `fish` shell style path
+    def ppath(self):
+        """pretty path
+        returns fish shell style short path
 
         eg `~/foo/Bar/baz` -> `~/f/B/baz`
         """
+        # name inspired by pprint.pprint()
+
         # aka prompt_pwd
         path_elements = self.fullpath.split("/")
         fish = "/".join([foldername[0] for foldername in path_elements[1:]])
         return "~/" + fish[4:-1] + self.name
 
     @staticmethod
-    def getkey(self):
+    def number(self):
         # NOTE: this may break in the future iff the name `Scan XX` changes.
         # BUG: jpeg/jpg files may collide with png files and there isn't a trivial solution to this.
 
@@ -133,13 +143,6 @@ class path(str):
         # if there is more than 10**10 files inside folder this doesn't work.
         key = f"{file_number.zfill(10)}{self.ext}"
         return key
-
-    @property
-    def childeren(self):
-        """return childeren elements inside this folder"""
-        if not self.is_folder:
-            raise NotADirectoryError("Cannot get child files/folders of a non-dir")
-        return (path(f'{self.fullpath}/{f}') for f in os.listdir(self.fullpath))
 
     def get_scans(self, *, ordered=True):
         """returns all scans inside folder with version sort
@@ -153,15 +156,15 @@ class path(str):
 
         supported_filetypes = [".png", ".jpg", ".jpeg"]
 
-        file_names = [f for f in self.childeren
+        file_names = [f for f in self.children
                       if any((f.ext == ext for ext in supported_filetypes))]
 
         if ordered:
-            return [f for f in sorted(file_names, key=self.getkey)]
-        return [f for f in file_names]
+            return list(sorted(file_names, key=self.number))
+        return file_names
 
-    @ property
-    def get_scan_count(self):
+    @property
+    def scan_count(self):
         """Gets the number of scans inside `folder`
 
         Since they are (kind of) 0 indexed this is the next scans number.
@@ -177,15 +180,15 @@ class path(str):
 
 class TempDir:
     def __init__(self, path: path):
-        self.path = path
+        self.temp_path = path
 
     def __enter__(self):
-        subprocess.run(["rm", "-rf", self.path], check=True)
-        subprocess.run(["mkdir", self.path], check=True)
-        return self.path
+        subprocess.run(["rm", "-rf", self.temp_path], check=True)
+        subprocess.run(["mkdir", self.temp_path], check=True)
+        return self.temp_path
 
     def __exit__(self, exception_type, exception_value, traceback):
-        subprocess.run(["rm", "-rf", self.path], check=True)
+        subprocess.run(["rm", "-rf", self.temp_path], check=True)
 
 
 # * Program functionality functions below.
@@ -194,23 +197,24 @@ class TempDir:
 scans_folder = path(scans_folder)
 pdf_outpath = path(pdf_outpath)
 
-last_unwrap_save = path(f"{scans_folder}/.last_unwrap_save")
+last_unwrap = path(f"{scans_folder}/.last_unwrap")
 
-makepdf_help = f"""make-pdf - Koray's managment tool for scanned documents
+program_help = f"""\
+make-pdf - Koray's managment tool for scanned documents
 
 Parameters:
   -h, --help        show this help message and exit
 
-  <name>            creates a pdf called <name> on {pdf_outpath.short_path}
+  <name>            creates a pdf called <name> on {pdf_outpath.ppath}
                     and then moves images to a folder called <name>. To disable
                     this behavior pass `-nw` to args
 
-  ls                `ls {scans_folder.short_path}`
-  ll                `ls -lh {scans_folder.short_path}`
-  open              `open {scans_folder.short_path}`
+  ls                `ls {scans_folder.ppath}`
+  ll                `ls -lh {scans_folder.ppath}`
+  open              `open {scans_folder.ppath}`
 
-  unwrap <folder>   move <folder> contents to {scans_folder.short_path}
-  wrap <?folder>    moves files of {scans_folder.short_path} to <?folder>
+  unwrap <folder>   move <folder> contents to {scans_folder.ppath}
+  wrap <?folder>    moves files of {scans_folder.ppath} to <?folder>
                     if no <?folder> is given. wraps to last unwrap.
 
 Usage:
@@ -218,81 +222,84 @@ Usage:
   make-pdf ll
   make-pdf open
   make-pdf unwrap <folder>
-  make-pdf wrap <?folder>
+  make-pdf wrap <?folder>\
 """
 
 
 def unwrap(folder_name):
-    unwrap_path = path(f"{scans_folder}/{folder_name}")
+    # unwrap dir
+    unwrap_d = path(f"{scans_folder}/{folder_name}")
 
-    if not unwrap_path.exists:
-        raise ExitFail(f"{unwrap_path.name} does not exists.")
+    if not unwrap_d.exists:
+        raise ExitFail(f"{unwrap_d.name} does not exists.")
 
-    if scans_folder.get_scan_count:
-        print(f"There are {scans_folder.get_scan_count} files in {scans_folder.short_path}. "
+    if scans_folder.scan_count:
+        print(f"There are {scans_folder.scan_count} files in {scans_folder.ppath}. "
               f"Unwrapping will append these files at the end of currently scanned documents. "
               f"There is no undo."
               )
-        if not click.confirm(f"Are you sure to unwrap {unwrap_path.short_path}?"):
+        if not click.confirm(f"Are you sure to unwrap {unwrap_d.ppath}?"):
             raise ExitSuccess("ok")
 
         # rename and move
-        for i, f in enumerate(unwrap_path.get_scans(),
-                              start=scans_folder.get_scan_count):
+        for i, f in enumerate(unwrap_d.get_scans(),
+                              start=scans_folder.scan_count):
             filename = path(f"{scans_folder}/Scan {i}{f.ext}")
             subprocess.run(["mv", f, filename], check=True)
 
     else:
-        subprocess.run(["mv"] + unwrap_path.get_scans(ordered=False) + [scans_folder],
+        subprocess.run(["mv"] + unwrap_d.get_scans(ordered=False) + [scans_folder],
                        check=True)
 
-    subprocess.run(["rm", "-d", unwrap_path], check=True)
+    subprocess.run(["rm", "-d", unwrap_d], check=True)
 
     # save the name for later use.
-    with open(last_unwrap_save, 'w') as f:
+    with open(last_unwrap, 'w') as f:
         f.write(folder_name)
-    print(f"unwrapped {unwrap_path.name} to {scans_folder.short_path}")
+    print(f"unwrapped {unwrap_d.name} to {scans_folder.ppath}")
 
 
 def wrap(folder_name):
     """wraps scans to a folder"""
-    if scans_folder.get_scan_count == 0:
-        raise ExitFail(f"{scans_folder.short_path} has no images")
+    if scans_folder.scan_count == 0:
+        raise ExitFail(f"{scans_folder.ppath} has no images")
 
-    wrap_path = path(f"{scans_folder}/{folder_name}")
+    # wrap dir
+    wrap_d = path(f"{scans_folder}/{folder_name}")
 
-    if wrap_path.get_scan_count >= 1:
+    if wrap_d.scan_count >= 1:
         # folder may exist but shoudn't have files in it
-        raise ExitFail(f"{wrap_path.short_path} has {wrap_path.get_scan_count} files."
+        raise ExitFail(f"{wrap_d.ppath} has {wrap_d.scan_count} files."
                        " Aborting wrap.")
 
     # create `wrap_path` if not exists
-    subprocess.run(["mkdir", "-p", wrap_path], check=True)
+    subprocess.run(["mkdir", "-p", wrap_d], check=True)
 
-    subprocess.run(["mv"] + scans_folder.get_scans(ordered=False) + [wrap_path], check=True)
+    subprocess.run(["mv"] + scans_folder.get_scans(ordered=False) + [wrap_d], check=True)
 
     # upon successful wraping remove
-    subprocess.run(["rm", "-f", last_unwrap_save])
-    print(f"wrapped to {wrap_path.name}")
+    subprocess.run(["rm", "-f", last_unwrap])
+    print(f"wrapped to {wrap_d.name}")
 
 
 def create_pdf(pdf_name):
-    if scans_folder.get_scan_count == 0:
+    if scans_folder.scan_count == 0:
         raise ExitFail(f"{scans_folder} has no images")
 
     with TempDir(path(f"{scans_folder}/.temp")) as tempdir:
-
-        # linking files to save space.
         for f in scans_folder.get_scans(ordered=False):
+            # linking files to save space.
             subprocess.run(["ln", f, f"{tempdir}/{f.name}"], check=True)
 
-        pdf_file = path(f"{tempdir}/{pdf_name}.pdf")
-        pdf_file_converted = path(f"{tempdir}/{pdf_name}_converted.pdf")
-
         # creating pdf
-        # Note: removing alpha channel from `png`s doesn't speed up the process.
+        pdf = path(f"{tempdir}/{pdf_name}.pdf")
+        pdf_compressed = path(f"{tempdir}/{pdf_name}_compressed.pdf")
+
+        # NOTE: if png's have an alpha channel beforehand do not remove it.
+        # it will slow down the process. leave it to img2pdf
         subprocess.run(["img2pdf"] + tempdir.get_scans()
-                       + ["--nodate", "--pagesize", "A4", "--viewer-fit-window", "--output", pdf_file],
+                       + ["--nodate", "--pagesize", "A4", "--viewer-fit-window",
+                          "--output", pdf],
                        check=True)
 
         keywords = re.split("|".join(r' _-\.='), pdf_name)
@@ -311,15 +318,15 @@ def create_pdf(pdf_name):
             "-quality", "60",
             "-compress", "jpeg"]
             + pdf_metadata
-            + [pdf_file, pdf_file_converted],
+            + [pdf, pdf_compressed],
             check=True
         )
 
-        if pdf_file_converted.size < pdf_file.size:
-            # if compression is sucessful
-            subprocess.run(["mv", "-f", pdf_file_converted, pdf_file], check=True)
+        compressed = pdf_compressed.size < pdf.size
+        if compressed:
+            subprocess.run(["mv", "-f", pdf_compressed, pdf], check=True)
         else:
-            subprocess.run(["convert"] + pdf_metadata + [pdf_file, pdf_file_converted],
+            subprocess.run(["convert"] + pdf_metadata + [pdf, pdf_compressed],
                            check=True
                            )
 
@@ -328,15 +335,15 @@ def create_pdf(pdf_name):
 
         outfile = path(f"{pdf_outpath}/{pdf_name}")
         if outfile.exists:
-            print(f"Overwriting file {outfile.short_path} on {outfile.parent.short_path}")
+            print(f"Overwriting file {outfile.ppath} on {outfile.parent.ppath}")
 
-        subprocess.run(["mv", pdf_file, pdf_outpath], check=True)
+        subprocess.run(["mv", pdf, pdf_outpath], check=True)
 
 
 def parse(args) -> dict:
     """parses program args"""
     if len(args) == 1:
-        print(makepdf_help)
+        print(program_help)
         raise ExitFail("Missing args.")
 
     p = {
@@ -366,9 +373,9 @@ def parse(args) -> dict:
         if len(args) >= 3:
             p["folder_name"] = args[2]
         else:
-            print(f"No wrap name is given. Checking {last_unwrap_save.short_path}")
+            print(f"No wrap name is given. Checking {last_unwrap.ppath}")
             try:
-                with open(last_unwrap_save, 'r') as f:
+                with open(last_unwrap, 'r') as f:
                     unwrap_contents = f.read()
             except FileNotFoundError:
                 raise ExitFail("last unwrap does not exists. Please give a wrap name")
@@ -418,7 +425,7 @@ def main():
 
     match args["process_name"]:
         case "help":
-            print(makepdf_help)
+            print(program_help)
 
         case "ls":
             subprocess.run(["ls", "-pG", scans_folder])
@@ -439,8 +446,8 @@ def main():
         case "create_pdf":  # this is the main functionality of this program.
             # precheck for 'wrap'ability, copied from checked inside `wrap`
             wrap_path = path(f"{scans_folder}/{args['folder_name']}")
-            if wrap_path.get_scan_count >= 1:
-                raise ExitFail(f"{wrap_path.short_path} has {wrap_path.get_scan_count} files."
+            if wrap_path.scan_count >= 1:
+                raise ExitFail(f"{wrap_path.ppath} has {wrap_path.scan_count} files."
                                " Please give `-nw` as argument to disable wrapping after pdf creation."
                                " Aborting wrap.")
 
